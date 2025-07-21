@@ -12,6 +12,7 @@ from comfy.ldm.flux.layers import timestep_embedding, apply_mod
 from comfy.ldm.lightricks.model import precompute_freqs_cis
 from comfy.ldm.lightricks.symmetric_patchifier import latent_to_pixel_coords
 from comfy.ldm.wan.model import sinusoidal_embedding_1d
+from dist_utils import args, tensor_chunk, all_gather, all_all
 
 
 SUPPORTED_MODELS_COEFFICIENTS = {
@@ -63,6 +64,13 @@ def teacache_flux_forward(
             
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
+        
+        if args.world_size>1:
+            img_lists = tensor_chunk(img, -2)
+            img = img_lists[args.rank]
+            txt = torch.chunk(txt, args.world_size, dim=-2)[args.rank]
+            img_ids = torch.chunk(img_ids, args.world_size, dim=-2)[args.rank]
+            txt_ids = torch.chunk(txt_ids, args.world_size, dim=-2)[args.rank]
 
         # running on sequences img
         img = self.img_in(img)
@@ -87,6 +95,8 @@ def teacache_flux_forward(
         modulated_inp = self.double_blocks[0].img_norm1(img)
         modulated_inp = apply_mod(modulated_inp, (1 + img_mod1.scale), img_mod1.shift).to(cache_device)
         ca_idx = 0
+        if args.world_size>0:
+            modulated_inp = all_gather(img_lists, modulated_inp, -2)
 
         if not hasattr(self, 'accumulated_rel_l1_distance'):
             should_calc = True
@@ -143,6 +153,8 @@ def teacache_flux_forward(
                     if i < len(control_i):
                         add = control_i[i]
                         if add is not None:
+                            if args.world_size>1:
+                                add = torch.chunk(add, args.world_size, dim=-2)[args.rank]
                             img += add
 
                 # PuLID attention
@@ -184,6 +196,8 @@ def teacache_flux_forward(
                     if i < len(control_o):
                         add = control_o[i]
                         if add is not None:
+                            if args.world_size>1:
+                                add = torch.chunk(add, args.world_size, dim=-2)[args.rank]
                             img[:, txt.shape[1] :, ...] += add
 
                 # PuLID attention
@@ -199,6 +213,8 @@ def teacache_flux_forward(
                     img = torch.cat((txt, real_img), 1)
 
             img = img[:, txt.shape[1] :, ...]
+            if args.world_size>0:
+                img = all_gather(img_lists, img, -2)
             self.previous_residual = img.to(cache_device) - ori_img
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
