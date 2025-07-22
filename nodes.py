@@ -834,7 +834,10 @@ def teacache_wanmodel_forward(
             for i, k in enumerate(cond_or_uncond):
                 x[i*b:(i+1)*b] += self.teacache_state[k]['previous_residual'].to(x.device)
         else:
-            ori_x = x.to(cache_device)
+            ori_x = x.to(cache_device, non_blocking=True)
+            if args.world_size>1:
+                x_lists = tensor_chunk(x, dim=1)
+                x = x_lists[args.rank]
             for i, block in enumerate(self.blocks):
                 if ("double_block", i) in blocks_replace:
                     def block_wrap(args):
@@ -845,6 +848,8 @@ def teacache_wanmodel_forward(
                     x = out["img"]
                 else:
                     x = block(x, e=e0, freqs=freqs, context=context, context_img_len=context_img_len)
+            if args.world_size>1:
+                x = all_gather(None, x, -2)
             for i, k in enumerate(cond_or_uncond):
                 self.teacache_state[k]['previous_residual'] = (x.to(cache_device) - ori_x)[i*b:(i+1)*b]
 
