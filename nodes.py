@@ -93,7 +93,7 @@ def teacache_flux_forward(
         # enable teacache
         img_mod1, _ = self.double_blocks[0].img_mod(vec)
         modulated_inp = self.double_blocks[0].img_norm1(img)
-        if args.world_size>0:
+        if args.world_size>1:
             modulated_inp = all_gather(None, modulated_inp, -2)
         modulated_inp = apply_mod(modulated_inp, (1 + img_mod1.scale), img_mod1.shift).to(cache_device)
         ca_idx = 0
@@ -216,7 +216,7 @@ def teacache_flux_forward(
             self.previous_residual = img.to(cache_device) - ori_img
 
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
-        if args.world_size>0:
+        if args.world_size>1:
             img = all_gather(img_lists, img, -2)
         
         return img
